@@ -179,6 +179,22 @@ try {
     assert.equal((await call('POST', '/api/messages', { text: '字'.repeat(201) }, A)).status, 400);
   });
 
+  await step('重新配對：連連換新帳號加入，舊訊息轉到新帳號、舊帳號刪除', async () => {
+    const r = await call('POST', '/api/couples/reinvite', null, A);
+    assert.equal(r.json.couple.paired, false);
+    const newCode = r.json.couple.code;
+    assert.notEqual(newCode, code);
+    assert.equal((await call('GET', '/api/me', null, B)).json.couple, null);
+    const B2 = (await call('POST', '/api/users', { name: '連連' })).json.token;
+    const joined = (await call('POST', '/api/couples/join', { code: newCode }, B2)).json;
+    assert.equal(joined.couple.paired, true);
+    assert.equal(joined.pinned.text, '晚安，夢裡見 🌙');
+    const mine = joined.messages.filter((m) => m.from === joined.me.id).map((m) => m.text);
+    assert.ok(mine.includes('想你了 💭'));
+    assert.equal((await call('GET', '/api/me', null, B)).status, 401);
+    received.length = 0;
+  });
+
   await step('資料有寫入磁碟（db.json、vapid.json）', async () => {
     const saved = JSON.parse(fs.readFileSync(path.join(tmp, 'db.json'), 'utf8'));
     assert.equal(Object.keys(saved.couples).length, 1);

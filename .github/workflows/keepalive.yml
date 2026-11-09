@@ -1,0 +1,16 @@
+# 防休眠：Render 免費方案閒置 15 分鐘會休眠，每 10 分鐘叫它一次
+# 需要在 repo 設定 Variables → APP_URL（例如 https://yu-ni-lian-xian.onrender.com）
+name: 防休眠
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    if: ${{ vars.APP_URL != '' }}
+    steps:
+      - name: 叫醒伺服器
+        run: curl -fsS --max-time 90 --retry 2 --retry-delay 10 "${{ vars.APP_URL }}/healthz"

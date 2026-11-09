@@ -1,0 +1,18 @@
+# Render 部署設定（Blueprint）
+# 在 Render 選 New → Blueprint，連結這個 GitHub repo 就會照這裡建立服務
+services:
+  - type: web
+    name: yu-ni-lian-xian
+    runtime: node
+    plan: free
+    region: singapore        # 離台灣最近
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true         # 推到 GitHub main 就自動重新部署
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Firebase 服務帳戶金鑰（JSON 全文）。建立時 Render 會請你貼上，不會存進 GitHub
+      - key: FIREBASE_SERVICE_ACCOUNT
+        sync: false

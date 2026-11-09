@@ -217,3 +217,11 @@ button.small { padding: 7px 12px; width: auto; font-size: 13px; border-radius: 1
   padding: 10px 18px; border-radius: 999px; font-size: 14px; z-index: 20;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
 }
+
+/* ---------- 通知診斷 ---------- */
+.diag-title { margin: 6px 0 0; font-size: 14px; color: var(--muted); font-weight: 600; }
+.diag { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.diag li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.diag li:last-child { border-bottom: 0; }
+.diag span { color: var(--muted); flex: none; }
+.diag strong { font-weight: 600; text-align: right; word-break: break-all; }

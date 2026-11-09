@@ -1,4 +1,4 @@
-// 嵎你連線 — 前端（無框架、免編譯）
+// 與你連線 — 前端（無框架、免編譯）
 const $ = (sel, root = document) => root.querySelector(sel);
 const appEl = $('#app');
 const TOKEN_KEY = 'yuni.token';
@@ -7,6 +7,20 @@ const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const isStandalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+
+// LINE／FB／IG 的內建瀏覽器收不到推播，也不能加入主畫面
+const ua = navigator.userAgent;
+const inAppBrowser = /\bLine\//i.test(ua) ? 'LINE'
+  : /FBAN|FBAV|FB_IAB/i.test(ua) ? 'Facebook'
+  : /Instagram/i.test(ua) ? 'Instagram'
+  : /MicroMessenger/i.test(ua) ? '微信' : null;
+// LINE 支援 openExternalBrowser=1：自動改用手機的預設瀏覽器（Chrome／Safari）開啟
+if (inAppBrowser === 'LINE' && !new URLSearchParams(location.search).has('openExternalBrowser')) {
+  const url = new URL(location.href);
+  url.searchParams.set('openExternalBrowser', '1');
+  location.replace(url.href);
+}
+const realBrowser = isIOS ? 'Safari' : 'Chrome';
 
 // localStorage 在私密模式等情況可能丟錯，一律包起來
 const storage = {
@@ -135,34 +149,84 @@ function urlBase64ToUint8Array(base64) {
   return Uint8Array.from(raw, (c) => c.charCodeAt(0));
 }
 
+function withTimeout(promise, ms, message) {
+  return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
+}
+
+function diagnostics() {
+  return {
+    platform: isIOS ? 'iOS' : /android/i.test(ua) ? 'Android' : 'other',
+    inAppBrowser,
+    standalone: isStandalone,
+    pushSupported,
+    permission: 'Notification' in window ? Notification.permission : 'unsupported',
+  };
+}
+
+// 把手機上的錯誤回報到伺服器終端機，方便除錯
+function report(message) {
+  try {
+    fetch('/api/client-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}) },
+      body: JSON.stringify({ message: String(message).slice(0, 500), ...diagnostics() }),
+    }).catch(() => {});
+  } catch { /* 忽略 */ }
+}
+
 async function currentSubscription() {
   if (!pushSupported) return null;
-  const reg = await navigator.serviceWorker.ready;
+  const reg = await withTimeout(navigator.serviceWorker.ready, 5000, 'Service Worker 沒有啟動');
   return reg.pushManager.getSubscription();
 }
 
 async function enablePush() {
-  if (!pushSupported) {
-    toast(isIOS && !isStandalone ? 'iPhone 要先「加入主畫面」，從桌面圖示打開才能開通知' : '這個瀏覽器不支援推播通知');
+  if (inAppBrowser) {
+    report('enablePush: in-app browser');
+    toast(`${inAppBrowser} 內建瀏覽器收不到通知，請改用 ${realBrowser} 打開`);
     return;
   }
-  const permission = await Notification.requestPermission();
-  if (permission !== 'granted') { toast('沒有拿到通知權限'); updateHome(); return; }
-  const reg = await navigator.serviceWorker.ready;
-  const { key } = await api('/api/vapid-public-key');
-  const options = { userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) };
-  let sub;
-  try {
-    sub = await reg.pushManager.subscribe(options);
-  } catch {
-    // 舊訂閱用的是別組金鑰：退訂後重來
-    await (await reg.pushManager.getSubscription())?.unsubscribe();
-    sub = await reg.pushManager.subscribe(options);
+  if (!pushSupported) {
+    report('enablePush: push unsupported');
+    toast(isIOS && !isStandalone ? 'iPhone 要先「加入主畫面」，從桌面圖示打開才能開通知' : `這個瀏覽器不支援推播，請改用 ${realBrowser}`);
+    return;
   }
-  await api('/api/subscriptions', { method: 'POST', body: sub.toJSON() });
-  state.subscribed = true;
-  await refresh();
-  toast('通知已開啟 🔔');
+  let step = '要求通知權限';
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      report(`enablePush: permission ${permission}`);
+      toast(permission === 'denied' ? '通知被封鎖了，請到瀏覽器的網站設定把通知打開' : '沒有允許通知，再按一次「開啟」試試');
+      updateHome();
+      return;
+    }
+    step = '啟動 Service Worker';
+    const reg = await withTimeout(navigator.serviceWorker.ready, 10000, 'Service Worker 沒有啟動');
+    step = '取得推播金鑰';
+    const { key } = await api('/api/vapid-public-key');
+    const options = { userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key) };
+    step = '向推播服務訂閱';
+    let sub;
+    try {
+      sub = await reg.pushManager.subscribe(options);
+    } catch (first) {
+      // 可能是舊訂閱用的是別組金鑰：退訂後重來
+      const old = await reg.pushManager.getSubscription();
+      if (!old) throw first;
+      await old.unsubscribe();
+      sub = await reg.pushManager.subscribe(options);
+    }
+    step = '儲存到伺服器';
+    await api('/api/subscriptions', { method: 'POST', body: sub.toJSON() });
+    state.subscribed = true;
+    step = '傳送測試通知';
+    const result = await api('/api/test-push', { method: 'POST' });
+    await refresh();
+    toast(result.sent ? '通知已開啟 🔔 馬上會收到一則測試通知' : '已開啟，但測試通知送不出去');
+  } catch (err) {
+    report(`enablePush failed at ${step}: ${err.name}: ${err.message}`);
+    throw new Error(`開啟通知失敗（${step}）：${err.message}`);
+  }
 }
 
 // 本機有訂閱、但伺服器那邊沒有（例如被清掉）→ 自動補登
@@ -232,7 +296,7 @@ function render() {
 const brand = `
   <div class="brand">
     <img src="/icons/icon-192.png" alt="" width="72" height="72">
-    <h1>嵎你連線</h1>
+    <h1>與你連線</h1>
     <p>兩個人的專屬小空間</p>
   </div>`;
 
@@ -246,7 +310,7 @@ function renderInstall() {
         <ol class="steps">
           <li>點 Safari 下方的「分享」按鈕 <span class="kbd">⬆︎</span></li>
           <li>往下滑，選「加入主畫面」</li>
-          <li>回到桌面，點「嵎你連線」圖示打開</li>
+          <li>回到桌面，點「與你連線」圖示打開</li>
         </ol>
       </div>
       <button class="link" data-action="skip-install">先在瀏覽器看看</button>
@@ -310,7 +374,7 @@ function renderWaiting() {
     <section class="screen center">
       ${brand}
       <div class="card">
-        <p class="muted">把這組配對碼給對方，在他的「嵎你連線」輸入：</p>
+        <p class="muted">把這組配對碼給對方，在他的「與你連線」輸入：</p>
         <div class="pair-code" aria-label="配對碼">${esc(couple.code)}</div>
         <div class="row">
           <button class="secondary" data-action="copy-code">複製</button>
@@ -327,7 +391,7 @@ function renderHome() {
   const { partner } = state.data;
   appEl.innerHTML = `
     <header class="topbar">
-      <h1>嵎你連線</h1>
+      <h1>與你連線</h1>
       <button class="icon-btn" data-action="settings" aria-label="設定">⚙︎</button>
     </header>
     <section class="screen">
@@ -426,12 +490,15 @@ function updateHome() {
 
 function pushBanner() {
   if (state.subscribed && state.data.me.pushDevices > 0) return '';
+  if (inAppBrowser) {
+    return `<div class="banner">你正在用 ${inAppBrowser} 的內建瀏覽器，收不到通知。請點右上角「⋯」選單，選「用 ${realBrowser} 開啟」。</div>`;
+  }
   if (isIOS && !isStandalone) {
     return `<div class="banner">iPhone 要先「分享 → 加入主畫面」，從桌面圖示打開才能收到通知。</div>`;
   }
   if (!pushSupported) return '<div class="banner">這個瀏覽器不支援推播通知，請改用 Chrome 或從主畫面打開。</div>';
   if (Notification.permission === 'denied') {
-    return '<div class="banner">通知權限被關掉了，請到手機的「設定 → 通知」把「嵎你連線」打開。</div>';
+    return '<div class="banner">通知權限被關掉了，請到手機的「設定 → 通知」把「與你連線」打開。</div>';
   }
   return `
     <div class="banner action">
@@ -466,6 +533,8 @@ async function renderSettings() {
           ${state.subscribed ? '<button class="secondary" data-action="test-push">傳一則測試通知給自己</button>'
             : '<button class="primary" data-action="enable-push">開啟通知</button>'}
         </div>
+        <h3 class="diag-title">通知診斷（收不到通知時截圖給我）</h3>
+        <ul class="diag" id="diag"><li><span>檢查中…</span></li></ul>
       </div>
       <div class="card">
         <h2>iPhone 桌面小工具</h2>
@@ -473,11 +542,16 @@ async function renderSettings() {
         <ol class="steps">
           <li>App Store 下載「Scriptable」</li>
           <li>按下方按鈕複製程式碼</li>
-          <li>打開 Scriptable → 右上「＋」→ 貼上 → 命名「嵎你連線」</li>
-          <li>長按桌面 → 「＋」→ 選 Scriptable 小工具 → 編輯小工具 → Script 選「嵎你連線」</li>
+          <li>打開 Scriptable → 右上「＋」→ 貼上 → 命名「與你連線」</li>
+          <li>長按桌面 → 「＋」→ 選 Scriptable 小工具 → 編輯小工具 → Script 選「與你連線」</li>
         </ol>
         <button class="secondary" data-action="copy-widget" ${state.widgetTemplate ? '' : 'disabled'}>複製小工具程式碼</button>
         <p class="muted small">程式碼裡含有你的登入碼，不要傳給別人。網址變了（例如重開 tunnel）要重新複製。</p>
+      </div>
+      <div class="card">
+        <h2>重新配對</h2>
+        <p class="muted">對方換手機、刪掉 App，或 iPhone 從主畫面打開變成沒登入時使用。會產生新的配對碼，對方用新帳號輸入就能接回來，之前的訊息都會保留。</p>
+        <button class="secondary" data-action="reinvite">產生新的配對碼</button>
       </div>
       <div class="card">
         <h2>登入碼</h2>
@@ -490,6 +564,7 @@ async function renderSettings() {
       </div>
       <button class="danger" data-action="logout">登出這台裝置</button>
     </section>`;
+  fillDiagnostics();
   if (!state.widgetTemplate) {
     try {
       state.widgetTemplate = await (await fetch('/widget-template.js')).text();
@@ -581,7 +656,7 @@ appEl.addEventListener('click', (event) => {
     'skip-install': () => { state.skipInstall = true; render(); },
     step: () => { state.step = el.dataset.step; render(); },
     'copy-code': async () => { await copyText(state.data.couple.code); toast('已複製配對碼'); },
-    'share-code': () => navigator.share({ title: '嵎你連線', text: `跟我連線吧 💞 配對碼：${state.data.couple.code}`, url: location.origin }).catch(() => {}),
+    'share-code': () => navigator.share({ title: '與你連線', text: `跟我連線吧 💞 配對碼：${state.data.couple.code}`, url: location.origin }).catch(() => {}),
     chip: () => {
       const ta = appEl.querySelector('textarea[name="text"]');
       ta.value = el.dataset.text;
@@ -611,6 +686,15 @@ appEl.addEventListener('click', (event) => {
     },
     'toggle-token': () => { state.showToken = !state.showToken; renderSettings(); },
     'copy-token': async () => { await copyText(state.token); toast('已複製登入碼'); },
+    reinvite: () => {
+      if (!confirm('要產生新的配對碼嗎？對方需要重新輸入才能連線，之前的訊息會保留。')) return;
+      withBusy(el, async () => {
+        state.data = await api('/api/couples/reinvite', { method: 'POST' });
+        state.screen = null;
+        state.step = 'waiting';
+        render();
+      });
+    },
     logout: () => {
       if (confirm('確定要登出這台裝置嗎？之後可以用登入碼還原。')) { state.screen = null; logout(); }
     },
@@ -618,10 +702,38 @@ appEl.addEventListener('click', (event) => {
   actions[el.dataset.action]?.();
 });
 
+async function fillDiagnostics() {
+  const d = diagnostics();
+  let sw = '沒有註冊 ❌';
+  let sub = '沒有 ❌';
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) sw = reg.active ? '執行中 ✅' : '安裝中…';
+    const s = await reg?.pushManager?.getSubscription();
+    if (s) sub = `有 ✅（${new URL(s.endpoint).host}）`;
+  } catch (err) {
+    sw = `錯誤：${err.message}`;
+  }
+  const rows = [
+    ['裝置', d.platform],
+    ['開啟方式', d.inAppBrowser ? `${d.inAppBrowser} 內建瀏覽器 ❌` : d.standalone ? '主畫面 App ✅' : `瀏覽器分頁${isIOS ? ' ❌（要從主畫面開）' : ''}`],
+    ['支援推播', d.pushSupported ? '是 ✅' : '否 ❌'],
+    ['通知權限', { granted: '已允許 ✅', denied: '已封鎖 ❌', default: '還沒允許', unsupported: '不支援 ❌' }[d.permission]],
+    ['Service Worker', sw],
+    ['這台的推播訂閱', sub],
+    ['伺服器記錄的裝置', `${state.data?.me.pushDevices ?? 0} 台`],
+  ];
+  const el = $('#diag');
+  if (el) el.innerHTML = rows.map(([k, v]) => `<li><span>${esc(k)}</span><strong>${esc(v)}</strong></li>`).join('');
+}
+
 // ---------- 啟動 ----------
+addEventListener('error', (e) => report(`JS error: ${e.message} @ ${e.filename}:${e.lineno}`));
+addEventListener('unhandledrejection', (e) => report(`Unhandled: ${e.reason?.message || e.reason}`));
+
 async function boot() {
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch((err) => console.warn('SW 註冊失敗', err));
+    navigator.serviceWorker.register('/sw.js').catch((err) => report(`SW 註冊失敗: ${err.message}`));
     navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.type === 'refresh') refresh(); });
   }
   navigator.clearAppBadge?.().catch(() => {});
@@ -635,6 +747,7 @@ async function boot() {
   }
   await syncSubscription();
   render();
+  report(`opened (${state.data?.me.pushDevices ?? 0} push devices on server, local subscribed=${state.subscribed})`);
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {

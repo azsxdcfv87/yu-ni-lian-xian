@@ -4,3 +4,6 @@ data/
 .env.*
 .DS_Store
 .claude/
+# Firebase 服務帳戶金鑰（等同密碼）
+*-firebase-adminsdk-*.json
+firebase-key.json

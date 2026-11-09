@@ -1,4 +1,4 @@
-// 嵎你連線 — Service Worker：離線殼層快取、接收推播、點通知開 App
+// 與你連線 — Service Worker：離線殼層快取、接收推播、點通知開 App
 const CACHE = 'yuni-shell-v1';
 const SHELL = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/badge-96.png'];
 
@@ -32,7 +32,7 @@ self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data?.text() }; }
 
-  const title = data.title || '嵎你連線';
+  const title = data.title || '與你連線';
   const options = {
     body: data.body || '',
     icon: '/icons/icon-192.png',

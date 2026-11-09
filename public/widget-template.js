@@ -1,4 +1,4 @@
-// 嵎你連線 — iPhone 桌面小工具（給 Scriptable App 用）
+// 與你連線 — iPhone 桌面小工具（給 Scriptable App 用）
 // 這段程式碼含有你的登入碼，請不要分享給別人。
 const SERVER = "__SERVER__";
 const TOKEN = "__TOKEN__";
@@ -95,7 +95,7 @@ try {
 } catch (e) {
   widget = new ListWidget();
   widget.backgroundColor = PINK;
-  const t = widget.addText(`嵎你連線\n連不上伺服器\n${e.message}`);
+  const t = widget.addText(`與你連線\n連不上伺服器\n${e.message}`);
   t.font = Font.systemFont(12);
   t.textColor = WHITE;
 }
