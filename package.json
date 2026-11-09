@@ -1,0 +1,20 @@
+{
+  "name": "yu-ni-lian-xian",
+  "version": "0.1.0",
+  "description": "嵎你連線：情侶專屬 PWA（交往天數、配對、釘選的話、Web Push）",
+  "private": true,
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "icons": "node scripts/make-icons.js",
+    "test": "node scripts/smoke-test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.22.3",
+    "web-push": "^3.6.7"
+  }
+}
